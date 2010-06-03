@@ -30,8 +30,8 @@ class PulseAudio(gobject.GObject):
 
     __gtype_name__ = 'PulseAudio'
     __gsignals__ = {
-        'default-sink-changed': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, ()),
-        'volume-changed': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, ())
+        'default-sink-changed': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, (gobject.TYPE_STRING,)),
+        'sink-changed': (gobject.SIGNAL_RUN_LAST, gobject.TYPE_NONE, (gobject.TYPE_STRING,))
         }
 
     def __init__(self, name):
@@ -93,11 +93,15 @@ class PulseAudio(gobject.GObject):
 
     def pa_context_subscribe_cb(self, context, event_type, index, user_data):
 
-        type = event_type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK
-        if type == PA_SUBSCRIPTION_EVENT_SERVER:
+        facility = event_type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK
+        type = event_type & PA_SUBSCRIPTION_EVENT_TYPE_MASK
+
+        if facility == PA_SUBSCRIPTION_EVENT_SERVER:
             o = pa_context_get_server_info(self._context, self._pa_server_info_cb, None)
             pa_operation_unref(o)
-        elif type == PA_SUBSCRIPTION_EVENT_SINK:
+        elif facility == PA_SUBSCRIPTION_EVENT_SINK:
+            if type == PA_SUBSCRIPTION_EVENT_REMOVE:
+                self.sinks = {}
             o = pa_context_get_sink_info_list(self._context, self._pa_sink_info_cb, None)
             pa_operation_unref(o)
 
@@ -106,23 +110,41 @@ class PulseAudio(gobject.GObject):
 
         if server_info:
             self.default_sink = server_info.contents.default_sink_name
+            gobject.idle_add(lambda: self.emit('default-sink-changed', self.default_sink))
 
 
     def pa_sink_info_cb(self, context, sink_info, index, userdata):
 
-        if sink_info:
-            sink_info = sink_info.contents
+        if not sink_info:
+            return
 
-            volume = pa_volume_to_volume(sink_info.volume)
-            if sink_info.mute == 1:
-                mute = True
-            else:
-                mute = False
+        sink_info = sink_info.contents
 
-            self.sinks[sink_info.name] = {
-                'volume': volume,
-                'mute': mute
-                }
+        name = sink_info.name
+        description = sink_info.description
+        volume = pa_volume_to_volume(sink_info.volume)
+        if sink_info.mute == 1:
+            mute = True
+        else:
+            mute = False
+
+        self.sinks[name] = {
+            'description': description,
+            'volume': volume,
+            'mute': mute
+            }
+
+        gobject.idle_add(lambda: self.emit('sink-changed', name))
+
+
+    def get_sinks(self):
+        return self.sinks
+
+
+    def set_default_sink(self, sink):
+
+        o = pa_context_set_default_sink(self._context, sink, self._null_cb, None)
+        pa_operation_unref(o)
 
 
     def get_default_sink(self):
